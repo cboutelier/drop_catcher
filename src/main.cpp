@@ -9,8 +9,9 @@
 #define dwon(port, pin) (port |= _BV(pin))
 #define dwoff(port, pin) (port &= ~(_BV(pin)))
 
-#define SICK_OUTPUT GPIO_NUM_15
-#define TRIGGER_OUTPUT GPIO_NUM_32
+#define SICK_OUTPUT GPIO_NUM_21
+#define TRIGGER_OUTPUT GPIO_NUM_18
+#define VALVE_OUTPUT GPIO_NUM_5
 
 Preferences preferences;
 
@@ -18,14 +19,16 @@ Preferences preferences;
 unsigned long firstDropTimestamp = 0;
 bool dropDetected = false;
 
-// Nextion tutorial variables
-uint32_t next, myInt = 0;
+uint32_t next = 0;
 uint32_t triggerPulseWidth = 10;
+uint32_t valvePulseWidth = 2;
 
 // Trigger flash or camera
 bool triggerFlash = true;
 uint32_t chuteHeight = 0;
 uint32_t sleepDelay = 0;
+
+uint32_t countDownStart = 10;
 
 #define ledPin 2
 
@@ -39,10 +42,12 @@ NexButton homeSettingsButton = NexButton(0, 1, "home_settings");
 // Settings page
 NexButton settingsBackButton = NexButton(1, 2, "settings_back");
 NexNumber triggerPulseWidthField = NexNumber(1, 4, "trigger_width");
+NexNumber valvePulseWidthField = NexNumber(1, 11, "valve_width");
 NexNumber heightField = NexNumber(1, 9, "distance_mm");
 NexNumber sleepMinField = NexNumber(1, 7, "sleep_min");
-NexCheckbox triggerField = NexCheckbox(1,10,"c0");
-NexButton settingsValidateButton = NexButton(1, 5, "validate");
+NexCheckbox triggerField = NexCheckbox(1, 10, "c0");
+NexNumber countDownField = NexNumber(1, 15, "countdown");
+NexButton settingsValidateButton = NexButton(1, 5, "settings_ok");
 
 NexTouch *nex_listen_list[] = {
     &homeSettingsButton,
@@ -50,7 +55,10 @@ NexTouch *nex_listen_list[] = {
     &heightField,
     &sleepMinField,
     &settingsValidateButton,
-    &triggerPulseWidthField, NULL};
+    &triggerPulseWidthField,
+    &valvePulseWidthField,
+    &countDownField,
+    NULL};
 
 long lastAction = 0;
 
@@ -65,9 +73,8 @@ void p0_b0_Push(void *ptr)
   sleepMinField.setValue(sleepDelay);
   heightField.setValue(chuteHeight);
   triggerField.setValue(triggerFlash);
+  countDownField.setValue(countDownStart);
 }
-
-
 
 void handleSettingsChanges(void *ptr)
 {
@@ -91,17 +98,29 @@ void handleSettingsChanges(void *ptr)
     Serial.println(sleepDelay);
   }
 
+  if (!valvePulseWidthField.getValue(&valvePulseWidth))
+  {
+    Serial.println("Could not get the valve pulse width");
+  }
+  countDownField.getValue(&countDownStart);
+  
   preferences.begin("drop", false);
   preferences.putUInt("TRIGGER_MS", triggerPulseWidth);
 
   preferences.putUInt("CHUTE_MM", chuteHeight);
   preferences.putBool("TRIGGER_FLASH", triggerFlash);
   preferences.putUInt("SLEEP", sleepDelay);
+  preferences.putUInt("VALVE_MS", valvePulseWidth);
+  preferences.putUInt("COUNT_DOWN", countDownStart);
 
   preferences.end();
 
   homePage.show();
   lastAction = millis();
+
+  digitalWrite(VALVE_OUTPUT, HIGH);
+  delay(valvePulseWidth);
+  digitalWrite(VALVE_OUTPUT, LOW);
 }
 
 void doInterrupt()
@@ -117,25 +136,33 @@ void doInterrupt()
 void loadValues()
 {
   Serial.println("------------------------------");
-  preferences.begin("drop", true);
-  triggerPulseWidth = preferences.getUInt("TRIGGER_MS", 50);
+  bool hasPref = preferences.begin("drop", false);
+  if (hasPref)
+  {
+    triggerPulseWidth = preferences.getUInt("TRIGGER_MS", 50);
 
-  Serial.print("Trigger width:");
-  Serial.println(triggerPulseWidth);
+    Serial.print("Trigger width:");
+    Serial.println(triggerPulseWidth);
 
-  chuteHeight = preferences.getUInt("CHUTE_MM", 600);
-  Serial.print("Chute height:");
-  Serial.println(chuteHeight);
+    chuteHeight = preferences.getUInt("CHUTE_MM", 600);
+    Serial.print("Chute height:");
+    Serial.println(chuteHeight);
 
-  sleepDelay = preferences.getUInt("SLEEP", 5);
-  Serial.print("Sleep delay:");
-  Serial.println(sleepDelay);
+    sleepDelay = preferences.getUInt("SLEEP", 5);
+    Serial.print("Sleep delay:");
+    Serial.println(sleepDelay);
 
-  triggerFlash = preferences.getBool("TRIGGER_FLASH", true);
-  Serial.print("Trigger flash:");
-  Serial.println(triggerFlash);
+    triggerFlash = preferences.getBool("TRIGGER_FLASH", true);
+    Serial.print("Trigger flash:");
+    Serial.println(triggerFlash);
 
-  Serial.println(sleepDelay);
+    valvePulseWidth = preferences.getUInt("VALVE_MS", 1);
+    countDownStart = preferences.getUInt("COUNT_DOWN",7);
+     Serial.print("Count down:");
+    Serial.println(countDownStart);
+  }else{
+    Serial.println("no pref");
+  }
   if (sleepDelay == 0)
   {
     sleepDelay = 3;
@@ -155,12 +182,15 @@ void setup()
   pinMode(ledPin, OUTPUT);
   digitalWrite(ledPin, LOW);
 
+  pinMode(VALVE_OUTPUT, OUTPUT);
+  digitalWrite(VALVE_OUTPUT, LOW);
+
   // Declare the GPIO_22( pin 39) as output.
   pinMode(TRIGGER_OUTPUT, OUTPUT);
   attachInterrupt(digitalPinToInterrupt(SICK_OUTPUT), doInterrupt, RISING);
 
   homeSettingsButton.attachPush(p0_b0_Push, &homeSettingsButton);
-    
+
   settingsValidateButton.attachPop(handleSettingsChanges, &settingsValidateButton);
 
   next = millis();
